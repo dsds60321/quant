@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #eef2f6;
+  --surface: #ffffff;
+  --surface-muted: #f8fafc;
+  --surface-strong: #e5e7eb;
+  --fg: #111827;
+  --fg-muted: #667085;
+  --line: #d7deea;
+  --line-strong: #94a3b8;
+  --buy: #16a34a;
+  --sell: #dc2626;
+  --hold: #d4a017;
+  --kpi: #155eef;
+  --shadow-soft: 0 20px 45px rgba(15, 23, 42, 0.08);
+}
+
+@theme inline {
+  --font-sans: "Pretendard Variable", "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  font-size: 90%;
+}
+
+body {
+  min-height: 100vh;
+  background: #eef2f6;
+  color: var(--fg);
+  font-family: var(--font-sans);
+}
+
+button,
+a,
+input,
+select,
+textarea {
+  outline: none;
+}
+
+.ui-shell {
+  @apply min-h-screen bg-transparent;
+}
+
+.ui-card {
+  @apply rounded-md border border-[color:var(--line)] bg-[color:var(--surface)] shadow-[var(--shadow-soft)];
+}
+
+.ui-section {
+  @apply rounded-md border border-[color:var(--line)] bg-[color:var(--surface)] shadow-[var(--shadow-soft)];
+}
+
+.ui-table {
+  @apply w-full border-separate border-spacing-0 overflow-hidden text-sm;
+}
+
+.ui-table th {
+  @apply border-b border-[color:rgba(15,23,42,0.08)] bg-[#f9fbff] px-3 py-2.5 text-left text-[10px] font-semibold tracking-[0.18em] text-[color:var(--fg-muted)] uppercase;
+}
+
+.ui-table td {
+  @apply border-b border-[color:rgba(15,23,42,0.06)] px-3 py-2.5 text-[12px] text-[color:var(--fg)];
+}
+
+.ui-table tr:last-child td {
+  @apply border-b-0;
+}
+
+.ui-button-primary {
+  @apply inline-flex items-center justify-center rounded-md bg-[color:var(--fg)] px-3 py-2 text-[12px] font-semibold text-white transition duration-200 hover:opacity-95;
+}
+
+.ui-button-secondary {
+  @apply inline-flex items-center justify-center rounded-md border border-[color:rgba(15,23,42,0.08)] bg-white px-3 py-2 text-[12px] font-semibold text-[color:var(--fg)] transition duration-200 hover:bg-[#f7f9fc];
+}
+
+.ui-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.ui-scrollbar::-webkit-scrollbar-thumb {
+  background: #c7d2e4;
+  border-radius: 999px;
+}
