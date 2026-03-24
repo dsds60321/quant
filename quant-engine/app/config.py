@@ -6,6 +6,14 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _resolve_spring_value(value: str) -> str | None:
+    if value.startswith("${") and value.endswith("}"):
+        placeholder = value[2:-1]
+        _, _, default_value = placeholder.partition(":")
+        return default_value or None
+    return value or None
+
+
 def _load_news_api_key_from_spring_config() -> str | None:
     root_dir = Path(__file__).resolve().parents[2]
     config_path = root_dir / "src" / "main" / "resources" / "application.yml"
@@ -29,7 +37,7 @@ def _load_news_api_key_from_spring_config() -> str | None:
             continue
         if in_api_block and in_news_block and indent >= 4 and stripped.startswith("key:"):
             value = stripped.split(":", 1)[1].strip()
-            return value.strip("'\"") or None
+            return _resolve_spring_value(value.strip("'\""))
     return None
 
 

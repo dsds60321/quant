@@ -38,3 +38,73 @@ out/
 
 ### Kotlin ###
 .kotlin
+
+### Python runtime artifacts ###
+__pycache__/
+*.py[cod]
+
+### Quant engine runtime cache ###
+quant-engine/.cache/
+
+### Local Python environments ###
+.venv/
+venv/
+quant-engine/venv/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+### Frontend generated artifacts ###
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/coverage/
+frontend/.vercel/
+frontend/.turbo/
+frontend/node_modules/
+frontend/*.tsbuildinfo
+
+### Local machine and temp files ###
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+tmp/
+temp/
+
+### Local secrets and private credentials ###
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.local
+*.pem
+*.key
+*.crt
+*.cer
+*.der
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+service-account*.json
+credentials*.json
+secrets*.json
+
+### Local app config overrides ###
+.gradle-local/
+src/main/resources/application-*.yml
+src/main/resources/application.yml.bak
+
+### Local-only project materials ###
+/stra/
+/docs/
