@@ -11,6 +11,7 @@ import pandas as pd
 import requests
 
 from app.config import get_settings
+from app.services.sector_taxonomy import normalize_sector_label
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 class SecCompanyFactsService:
     _TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers_exchange.json"
     _BULK_COMPANY_FACTS_URL = "https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip"
+    _SUBMISSIONS_URL_TEMPLATE = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
     _US_EXCHANGES = {"NASDAQ", "NYSE", "NYSE MKT", "NYSE ARCA", "AMEX", "IEX", "BATS", "CBOE", "UNKNOWN"}
     _CIK_PATTERN = re.compile(r"(CIK\d{10})\.json$", re.IGNORECASE)
     _FORMS = {"10-Q", "10-Q/A", "10-K", "10-K/A", "20-F", "20-F/A", "40-F", "40-F/A", "6-K", "6-K/A"}
@@ -26,6 +28,8 @@ class SecCompanyFactsService:
         self.settings = get_settings()
         self.cache_dir = Path(__file__).resolve().parents[2] / ".cache" / "sec"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.submissions_cache_dir = self.cache_dir / "submissions"
+        self.submissions_cache_dir.mkdir(parents=True, exist_ok=True)
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -37,6 +41,7 @@ class SecCompanyFactsService:
         self._ticker_map: dict[str, dict] | None = None
         self._bulk_zip: zipfile.ZipFile | None = None
         self._bulk_member_index: dict[str, str] | None = None
+        self._submissions_cache: dict[int, dict] = {}
 
     def is_supported_symbol(self, symbol: str, exchange: str | None) -> bool:
         normalized_symbol = str(symbol or "").strip().upper()
@@ -53,11 +58,25 @@ class SecCompanyFactsService:
         ticker_entry = self._resolve_ticker_entry(symbol)
         if ticker_entry is None:
             return None
+        submissions = self._load_submissions_payload(int(ticker_entry["cik"])) or {}
+        name = self._clean_text(submissions.get("name")) or self._clean_text(ticker_entry.get("name")) or symbol
+        exchange_label = (
+            self._clean_text(exchange)
+            or self._first_text(submissions.get("exchanges"))
+            or self._clean_text(ticker_entry.get("exchange"))
+            or "UNKNOWN"
+        )
+        industry = self._clean_text(submissions.get("sicDescription"))
+        sector = normalize_sector_label(None, industry, name, "STOCK")
         return {
             "symbol": symbol,
-            "exchange": exchange or ticker_entry.get("exchange") or "UNKNOWN",
-            "name": ticker_entry.get("name") or symbol,
+            "exchange": exchange_label,
+            "name": name,
             "currency": "USD",
+            "industry": industry,
+            "sector": sector,
+            "sic": self._clean_text(submissions.get("sic")),
+            "quoteType": "EQUITY",
         }
 
     def build_fundamental_rows(self, symbol: str, exchange: str | None, history: pd.DataFrame) -> list[dict] | None:
@@ -258,6 +277,18 @@ class SecCompanyFactsService:
             logger.warning("SEC company facts load failed for %s", cik_key, exc_info=True)
             return None
 
+    def _load_submissions_payload(self, cik: int) -> dict | None:
+        if cik in self._submissions_cache:
+            return self._submissions_cache[cik]
+        cache_path = self.submissions_cache_dir / f"CIK{cik:010d}.json"
+        try:
+            payload = self._load_or_download_json(cache_path, self._SUBMISSIONS_URL_TEMPLATE.format(cik=cik))
+        except Exception:
+            logger.warning("SEC submissions load failed for CIK%010d", cik, exc_info=True)
+            return None
+        self._submissions_cache[cik] = payload
+        return payload
+
     def _get_bulk_archive(self) -> zipfile.ZipFile:
         cache_path = self.cache_dir / "companyfacts.zip"
         if self._bulk_zip is not None and cache_path.exists() and not self._is_cache_stale(cache_path):
@@ -426,6 +457,23 @@ class SecCompanyFactsService:
         if clean.empty:
             return None
         return float(clean.iloc[-1])
+
+    @staticmethod
+    def _clean_text(value: object | None) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @classmethod
+    def _first_text(cls, values: object | None) -> str | None:
+        if isinstance(values, list):
+            for value in values:
+                text = cls._clean_text(value)
+                if text:
+                    return text
+            return None
+        return cls._clean_text(values)
 
     @staticmethod
     def _is_cache_stale(cache_path: Path) -> bool:

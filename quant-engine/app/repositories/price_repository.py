@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pandas as pd
@@ -31,33 +31,48 @@ class PriceRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get_price_frame(self, end_date: date, lookback_days: int = 400, symbols: list[str] | None = None) -> pd.DataFrame:
-        stmt = select(Price).where(Price.date <= end_date)
+    def get_price_frame(
+        self,
+        end_date: date,
+        lookback_days: int = 400,
+        symbols: list[str] | None = None,
+        start_date: date | None = None,
+    ) -> pd.DataFrame:
+        stmt = select(
+            Price.symbol,
+            Price.date,
+            Price.open,
+            Price.high,
+            Price.low,
+            Price.close,
+            Price.adj_close,
+            Price.volume,
+        ).where(Price.date <= end_date)
+        if start_date is not None:
+            stmt = stmt.where(Price.date >= start_date)
+        elif lookback_days > 0:
+            cutoff_date = end_date - timedelta(days=max(lookback_days * 2, lookback_days))
+            stmt = stmt.where(Price.date >= cutoff_date)
         if symbols:
             stmt = stmt.where(Price.symbol.in_(symbols))
-        rows = self.session.scalars(stmt).all()
+        rows = self.session.execute(stmt.order_by(Price.symbol.asc(), Price.date.asc())).all()
         if not rows:
             return pd.DataFrame(columns=["symbol", "date", "close", "adj_close", "volume"])
         frame = pd.DataFrame(
             [
                 {
-                    "symbol": row.symbol,
-                    "date": row.date,
-                    "open": float(row.open or 0),
-                    "high": float(row.high or 0),
-                    "low": float(row.low or 0),
-                    "close": float(row.close or 0),
-                    "adj_close": float(row.adj_close or row.close or 0),
-                    "volume": float(row.volume or 0),
+                    "symbol": symbol,
+                    "date": trade_date,
+                    "open": float(open_price or 0),
+                    "high": float(high_price or 0),
+                    "low": float(low_price or 0),
+                    "close": float(close_price or 0),
+                    "adj_close": float(adj_close or close_price or 0),
+                    "volume": float(volume or 0),
                 }
-                for row in rows
+                for symbol, trade_date, open_price, high_price, low_price, close_price, adj_close, volume in rows
             ]
         )
-        frame = frame.sort_values(["symbol", "date"])
-        if lookback_days > 0:
-            frame["date"] = pd.to_datetime(frame["date"])
-            cutoff = frame["date"].max() - pd.Timedelta(days=lookback_days * 2)
-            frame = frame[frame["date"] >= cutoff]
         return frame.reset_index(drop=True)
 
     def get_latest_prices(self, symbols: list[str] | None = None) -> pd.DataFrame:

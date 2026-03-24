@@ -8,6 +8,7 @@ from app.schemas.common import ApiResponse
 from app.schemas.factor import FactorCalculationRequest
 from app.schemas.strategy import StrategySnapshot
 from app.services.factor_service import FactorService
+from app.services.universe_service import UniverseService
 
 router = APIRouter(tags=["factor"])
 
@@ -34,17 +35,44 @@ def _ad_hoc_strategy(request: FactorCalculationRequest) -> StrategySnapshot:
     )
 
 
+def _resolved_request(request: FactorCalculationRequest, db: Session) -> FactorCalculationRequest:
+    if request.universe_scope is None:
+        return request
+    scope_service = UniverseService(db)
+    effective_scope = request.universe_scope.model_copy(deep=True)
+    # Strategy candidate analysis uses the strategy's saved universe as the
+    # authoritative scope, even when it is not marked as a one-time override.
+    if effective_scope.override_mode != "ONE_TIME_OVERRIDE":
+        effective_scope.override_mode = "ONE_TIME_OVERRIDE"
+    resolved_scope = scope_service.resolve_universe_scope(effective_scope)
+    if resolved_scope.allowed_symbols is None:
+        return request
+    return request.model_copy(
+        update={
+            "universe_scope": resolved_scope.scope,
+            "universe": request.universe.model_copy(
+                update={
+                    "allowed_symbols": resolved_scope.allowed_symbols,
+                    "preserve_explicit_symbols": resolved_scope.scope.mode in {"SPECIFIC_STOCKS", "PORTFOLIO"},
+                }
+            )
+        }
+    )
+
+
 @router.post("/factor/calculate")
 def calculate_factor(request: FactorCalculationRequest, db: Session = Depends(get_db)):
+    resolved_request = _resolved_request(request, db)
     service = FactorService(db)
-    strategy = _ad_hoc_strategy(request)
-    data = service.calculate(request, strategy)
+    strategy = _ad_hoc_strategy(resolved_request)
+    data = service.calculate(resolved_request, strategy)
     return ApiResponse(data=data)
 
 
 @router.post("/strategy/candidates")
 def generate_candidates(request: FactorCalculationRequest, db: Session = Depends(get_db)):
+    resolved_request = _resolved_request(request, db)
     service = FactorService(db)
-    strategy = _ad_hoc_strategy(request)
-    data = service.analyze_candidates(request, strategy)
+    strategy = _ad_hoc_strategy(resolved_request)
+    data = service.analyze_candidates(resolved_request, strategy)
     return ApiResponse(data=data)

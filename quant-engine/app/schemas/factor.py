@@ -5,6 +5,7 @@ from datetime import date
 from pydantic import Field
 
 from app.schemas.common import CamelModel
+from app.schemas.backtest import UniverseScope
 from app.schemas.strategy import StrategyFactorWeight
 
 
@@ -14,6 +15,9 @@ class UniverseConfig(CamelModel):
     min_history_days: int = 20
     max_missing_ratio: float = 1.0
     stale_after_days: int = 30
+    allowed_symbols: list[str] | None = None
+    preserve_explicit_symbols: bool = False
+    force_include_allowed_symbols: bool = False
 
 
 class FactorCalculationRequest(CamelModel):
@@ -27,6 +31,7 @@ class FactorCalculationRequest(CamelModel):
     factor_weight_mode: str = "AUTO"
     factor_weights: list[StrategyFactorWeight] = Field(default_factory=list)
     universe: UniverseConfig = Field(default_factory=UniverseConfig)
+    universe_scope: UniverseScope | None = None
 
 
 class FactorSnapshot(CamelModel):

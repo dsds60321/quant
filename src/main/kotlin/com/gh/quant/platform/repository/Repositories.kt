@@ -27,6 +27,7 @@ import com.gh.quant.platform.domain.entity.StrategyRun
 import com.gh.quant.platform.domain.entity.TradingOrder
 import com.gh.quant.platform.domain.entity.User
 import com.gh.quant.platform.repository.custom.StockQueryRepository
+import org.springframework.data.jpa.repository.EntityGraph
 import org.springframework.data.jpa.repository.JpaRepository
 
 interface UserRepository : JpaRepository<User, Long> {
@@ -100,6 +101,7 @@ interface ExecutionRepository : JpaRepository<Execution, Long>
 interface StrategyRunRepository : JpaRepository<StrategyRun, Long> {
     fun countByStatus(status: String): Long
     fun findByStatus(status: String): List<StrategyRun>
+    @EntityGraph(attributePaths = ["strategy", "portfolio"])
     fun findTop20ByOrderByCreatedAtDesc(): List<StrategyRun>
 }
 

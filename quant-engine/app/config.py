@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     translation_model_name: str = "Helsinki-NLP/opus-mt-tc-big-en-ko"
     news_max_nodes: int = 100
     news_lookback_days: int = 7
+    backtest_orphan_recovery_message: str = "이전 백테스트 프로세스가 중단되어 자동 실패 처리되었습니다."
 
     @property
     def sqlalchemy_database_uri(self) -> str:

@@ -1,5 +1,6 @@
 package com.gh.quant.platform.service
 
+import com.gh.quant.platform.dto.StockRegisterRequest
 import com.gh.quant.platform.dto.StockDataDetailDto
 import com.gh.quant.platform.dto.StockDataEventItemDto
 import com.gh.quant.platform.dto.StockDataFundamentalPointDto
@@ -26,12 +27,61 @@ class StockDataExplorerService(
     private val newsImpactRepository: NewsImpactRepository,
     private val eventRepository: EventRepository,
     private val eventAnalysisRepository: EventAnalysisRepository,
+    private val stockLookupService: StockLookupService,
 ) {
+    private val etfNameTokens = listOf(
+        "etf", "etn", "trust", "fund", "spdr", "ishares", "vanguard", "invesco",
+        "wisdomtree", "proshares", "direxion", "global x", "kodex", "tiger",
+        "arirang", "kbstar", "ace", "sol",
+    )
+
+    private fun resolveMarketType(symbol: String, exchange: String?): String {
+        val normalizedExchange = exchange?.uppercase().orEmpty()
+        if (symbol.uppercase().endsWith(".KS") || symbol.uppercase().endsWith(".KQ")) {
+            return "DOMESTIC"
+        }
+        if (normalizedExchange.contains("KOSPI") || normalizedExchange.contains("KOSDAQ") || normalizedExchange.contains("KRX")) {
+            return "DOMESTIC"
+        }
+        return "INTERNATIONAL"
+    }
+
+    private fun resolveAssetGroup(symbol: String, name: String?, exchange: String?): String {
+        val normalizedName = name?.lowercase().orEmpty()
+        if (etfNameTokens.any { token -> normalizedName.contains(token) }) {
+            return "ETF"
+        }
+        val normalizedExchange = exchange?.uppercase().orEmpty()
+        if (symbol.uppercase().endsWith(".KQ") || normalizedExchange.contains("KOSDAQ")) {
+            return "KOSDAQ"
+        }
+        if (symbol.uppercase().endsWith(".KS") || normalizedExchange.contains("KOSPI") || normalizedExchange.contains("KRX")) {
+            return "KOSPI"
+        }
+        return "STOCK"
+    }
+
+    private fun ensureSymbolData(resolvedSymbol: String, stockName: String?, exchange: String?) {
+        runCatching {
+            stockLookupService.registerSymbol(
+                StockRegisterRequest(
+                    symbol = resolvedSymbol,
+                    marketType = resolveMarketType(resolvedSymbol, exchange),
+                    assetGroup = resolveAssetGroup(resolvedSymbol, stockName, exchange),
+                ),
+            )
+        }
+    }
+
     @Transactional(readOnly = true)
     fun getSymbolDetail(symbol: String): StockDataDetailDto {
         val resolvedSymbol = symbol.trim().uppercase()
-        val stock = stockRepository.findBySymbol(resolvedSymbol)
-            ?: throw ResourceNotFoundException("저장된 종목 데이터를 찾을 수 없습니다: $resolvedSymbol")
+        var stock = stockRepository.findBySymbol(resolvedSymbol)
+        if (stock == null || priceRepository.countBySymbol(resolvedSymbol) == 0L) {
+            ensureSymbolData(resolvedSymbol, stock?.name, stock?.exchange)
+            stock = stockRepository.findBySymbol(resolvedSymbol)
+        }
+        val resolvedStock = stock ?: throw ResourceNotFoundException("저장된 종목 데이터를 찾을 수 없습니다: $resolvedSymbol")
 
         val latestPrices = priceRepository.findTop2BySymbolOrderByDateDesc(resolvedSymbol)
         val priceSeries = priceRepository.findTop180BySymbolOrderByDateDesc(resolvedSymbol).reversed()
@@ -67,13 +117,13 @@ class StockDataExplorerService(
         }
 
         return StockDataDetailDto(
-            symbol = stock.symbol,
-            name = stock.name,
-            exchange = stock.exchange,
-            currency = stock.currency,
-            sector = stock.sector,
-            industry = stock.industry,
-            marketCap = stock.marketCap ?: fundamentals.firstOrNull()?.marketCap,
+            symbol = resolvedStock.symbol,
+            name = resolvedStock.name,
+            exchange = resolvedStock.exchange,
+            currency = resolvedStock.currency,
+            sector = resolvedStock.sector,
+            industry = resolvedStock.industry,
+            marketCap = resolvedStock.marketCap ?: fundamentals.firstOrNull()?.marketCap,
             latestPriceDate = latestPrice?.date?.toString(),
             latestPrice = latestClose,
             previousClose = previousClose,

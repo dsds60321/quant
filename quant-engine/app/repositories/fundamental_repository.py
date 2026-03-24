@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pandas as pd
@@ -79,27 +79,49 @@ class FundamentalRepository:
             ]
         )
 
-    def get_fundamental_history(self, end_date: date, symbols: list[str] | None = None) -> pd.DataFrame:
-        stmt = select(Fundamental).where(Fundamental.date <= end_date)
+    def get_fundamental_history(
+        self,
+        end_date: date,
+        symbols: list[str] | None = None,
+        lookback_days: int | None = None,
+        start_date: date | None = None,
+    ) -> pd.DataFrame:
+        stmt = select(
+            Fundamental.symbol,
+            Fundamental.date,
+            Fundamental.per,
+            Fundamental.pbr,
+            Fundamental.roe,
+            Fundamental.eps,
+            Fundamental.dividend_yield,
+            Fundamental.market_cap,
+            Fundamental.revenue,
+            Fundamental.net_income,
+        ).where(Fundamental.date <= end_date)
+        if start_date is not None:
+            stmt = stmt.where(Fundamental.date >= start_date)
+        elif lookback_days is not None and lookback_days > 0:
+            stmt = stmt.where(Fundamental.date >= (end_date - timedelta(days=lookback_days)))
         if symbols:
             stmt = stmt.where(Fundamental.symbol.in_(symbols))
-        rows = self.session.scalars(stmt).all()
+        rows = self.session.execute(stmt.order_by(Fundamental.symbol.asc(), Fundamental.date.asc())).all()
         if not rows:
             return pd.DataFrame(columns=self._FRAME_COLUMNS)
         return pd.DataFrame(
             [
                 {
-                    "symbol": row.symbol,
-                    "date": row.date,
-                    "per": float(row.per) if row.per is not None else None,
-                    "pbr": float(row.pbr) if row.pbr is not None else None,
-                    "roe": float(row.roe) if row.roe is not None else None,
-                    "eps": float(row.eps) if row.eps is not None else None,
-                    "market_cap": float(row.market_cap) if row.market_cap is not None else None,
-                    "revenue": float(row.revenue) if row.revenue is not None else None,
-                    "net_income": float(row.net_income) if row.net_income is not None else None,
+                    "symbol": symbol,
+                    "date": fundamental_date,
+                    "per": float(per) if per is not None else None,
+                    "pbr": float(pbr) if pbr is not None else None,
+                    "roe": float(roe) if roe is not None else None,
+                    "eps": float(eps) if eps is not None else None,
+                    "dividend_yield": float(dividend_yield) if dividend_yield is not None else None,
+                    "market_cap": float(market_cap) if market_cap is not None else None,
+                    "revenue": float(revenue) if revenue is not None else None,
+                    "net_income": float(net_income) if net_income is not None else None,
                 }
-                for row in rows
+                for symbol, fundamental_date, per, pbr, roe, eps, dividend_yield, market_cap, revenue, net_income in rows
             ]
         )
 

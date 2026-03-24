@@ -1,5 +1,6 @@
 package com.gh.quant.platform.service
 
+import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.gh.quant.platform.client.PythonQuantEngineClient
 import com.gh.quant.platform.domain.entity.Backtest
@@ -16,10 +17,19 @@ import com.gh.quant.platform.domain.entity.StrategyWeightSnapshot
 import com.gh.quant.platform.domain.entity.TradingOrder
 import com.gh.quant.platform.dto.BacktestHistoryItemDto
 import com.gh.quant.platform.dto.BacktestJobStatusDto
+import com.gh.quant.platform.dto.BacktestPatternBreakdownDto
+import com.gh.quant.platform.dto.BacktestPatternDefinitionDto
 import com.gh.quant.platform.dto.BacktestQueueResponseDto
+import com.gh.quant.platform.dto.BacktestResearchConfigDto
 import com.gh.quant.platform.dto.BacktestRequest
 import com.gh.quant.platform.dto.BacktestResultDto
+import com.gh.quant.platform.dto.BacktestSignalPlanDto
+import com.gh.quant.platform.dto.BacktestSignalTimelineItemDto
 import com.gh.quant.platform.dto.BacktestSnapshotDto
+import com.gh.quant.platform.dto.BacktestStockBreakdownDto
+import com.gh.quant.platform.dto.BacktestTradeLogItemDto
+import com.gh.quant.platform.dto.BacktestUniverseScopeDto
+import com.gh.quant.platform.dto.BacktestUniverseScopeRequest
 import com.gh.quant.platform.dto.DashboardSummaryDto
 import com.gh.quant.platform.dto.DataSourceStatusDto
 import com.gh.quant.platform.dto.DataStatusDto
@@ -100,6 +110,114 @@ import org.springframework.jdbc.core.JdbcTemplate
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
+private fun buildUniverseScopePayload(scope: BacktestUniverseScopeRequest): Map<String, Any?> = linkedMapOf(
+    "overrideMode" to scope.overrideMode,
+    "mode" to scope.mode,
+    "marketScope" to scope.marketScope,
+    "assetScope" to scope.assetScope,
+    "selectedStocks" to scope.selectedStocks.map { stock ->
+        linkedMapOf(
+            "symbol" to stock.symbol,
+            "name" to stock.name,
+            "exchange" to stock.exchange,
+            "marketType" to stock.marketType,
+            "assetGroup" to stock.assetGroup,
+        )
+    },
+    "selectedSectors" to scope.selectedSectors,
+    "selectedThemes" to scope.selectedThemes,
+    "portfolioSource" to scope.portfolioSource,
+    "portfolioKey" to scope.portfolioKey,
+    "portfolioId" to scope.portfolioId,
+    "portfolioName" to scope.portfolioName,
+    "estimatedStockCount" to scope.estimatedStockCount,
+    "lastUpdatedAt" to scope.lastUpdatedAt,
+)
+
+private fun buildUniverseScopePayload(scope: BacktestUniverseScopeDto): Map<String, Any?> = linkedMapOf(
+    "overrideMode" to scope.overrideMode,
+    "mode" to scope.mode,
+    "marketScope" to scope.marketScope,
+    "assetScope" to scope.assetScope,
+    "selectedStocks" to scope.selectedStocks.map { stock ->
+        linkedMapOf(
+            "symbol" to stock.symbol,
+            "name" to stock.name,
+            "exchange" to stock.exchange,
+            "marketType" to stock.marketType,
+            "assetGroup" to stock.assetGroup,
+        )
+    },
+    "selectedSectors" to scope.selectedSectors,
+    "selectedThemes" to scope.selectedThemes,
+    "portfolioSource" to scope.portfolioSource,
+    "portfolioKey" to scope.portfolioKey,
+    "portfolioId" to scope.portfolioId,
+    "portfolioName" to scope.portfolioName,
+    "estimatedStockCount" to scope.estimatedStockCount,
+    "lastUpdatedAt" to scope.lastUpdatedAt,
+)
+
+private fun BacktestUniverseScopeDto.toRequest(): BacktestUniverseScopeRequest = BacktestUniverseScopeRequest(
+    overrideMode = overrideMode,
+    mode = mode,
+    marketScope = marketScope,
+    assetScope = assetScope,
+    selectedStocks = selectedStocks.map { stock ->
+        com.gh.quant.platform.dto.BacktestUniverseStockRequest(
+            symbol = stock.symbol,
+            name = stock.name,
+            exchange = stock.exchange,
+            marketType = stock.marketType,
+            assetGroup = stock.assetGroup,
+        )
+    },
+    selectedSectors = selectedSectors,
+    selectedThemes = selectedThemes,
+    portfolioSource = portfolioSource,
+    portfolioKey = portfolioKey,
+    portfolioId = portfolioId,
+    portfolioName = portfolioName,
+    estimatedStockCount = estimatedStockCount,
+    lastUpdatedAt = lastUpdatedAt,
+)
+
+private fun parseBacktestUniverseScope(objectMapper: ObjectMapper, rawJson: String?): BacktestUniverseScopeDto? {
+    if (rawJson.isNullOrBlank()) {
+        return null
+    }
+    return try {
+        objectMapper.readValue(rawJson, object : TypeReference<BacktestUniverseScopeDto>() {})
+    } catch (_: Exception) {
+        null
+    }
+}
+
+private fun serializeBacktestUniverseScope(objectMapper: ObjectMapper, scope: BacktestUniverseScopeRequest?): String? {
+    if (scope == null) {
+        return null
+    }
+    return objectMapper.writeValueAsString(buildUniverseScopePayload(scope))
+}
+
+private fun isStrategyDefaultUniverseScope(scope: BacktestUniverseScopeRequest?): Boolean {
+    if (scope == null) {
+        return true
+    }
+    if (scope.overrideMode.uppercase() == "ONE_TIME_OVERRIDE") {
+        return false
+    }
+    return scope.mode == "FULL_MARKET" &&
+        scope.marketScope == "STRATEGY_DEFAULT" &&
+        scope.assetScope == "STRATEGY_DEFAULT" &&
+        scope.selectedStocks.isEmpty() &&
+        scope.selectedSectors.isEmpty() &&
+        scope.selectedThemes.isEmpty() &&
+        scope.portfolioKey.isNullOrBlank() &&
+        scope.portfolioId == null &&
+        scope.portfolioName.isNullOrBlank()
+}
+
 @Service
 class DashboardService(
     private val positionRepository: PositionRepository,
@@ -150,6 +268,7 @@ class MarketService(
                         from prices
                         where date < (select max(date) from prices)
                     ) as previous_date
+                from prices
             )
             select
                 coalesce(nullif(trim(s.sector), ''), '미분류') as sector,
@@ -202,6 +321,17 @@ class StrategyService(
     @Transactional
     fun createStrategy(request: StrategyCreateRequest): StrategyCreateResponse {
         val normalizedFactors = normalizeFactorWeights(request.factorWeightMode, request.factorWeights)
+        val serializedUniverseScope = serializeBacktestUniverseScope(objectMapper, request.universeScope)
+        val analysisFingerprint = buildAnalysisFingerprint(
+            roe = request.roe,
+            pbr = request.pbr,
+            momentum = request.momentum,
+            stockCount = request.stockCount,
+            rebalance = request.rebalance,
+            factorWeightMode = request.factorWeightMode,
+            factorWeights = normalizedFactors,
+            universeScopeJson = serializedUniverseScope,
+        )
         val strategy = strategyRepository.save(
             Strategy(
                 name = request.name.trim(),
@@ -213,6 +343,7 @@ class StrategyService(
                 rebalancePeriod = request.rebalance,
                 weightingMethod = "EQUAL_WEIGHT",
                 factorWeightMode = request.factorWeightMode.uppercase(),
+                universeScopeJson = serializedUniverseScope,
                 status = "DRAFT",
             ),
         )
@@ -220,6 +351,7 @@ class StrategyService(
         val analysisJobId = strategyAnalysisDispatcher.enqueueAfterCommit(
             strategyId = strategy.id!!,
             strategyUpdatedAt = strategy.updatedAt,
+            analysisFingerprint = analysisFingerprint,
             payload = buildCandidatePayload(request),
         )
         return queuedStrategyResponse(strategy.id!!, analysisJobId)
@@ -227,8 +359,22 @@ class StrategyService(
 
     @Transactional
     fun updateStrategy(strategyId: Long, request: StrategyUpdateRequest): StrategyCreateResponse {
-        val normalizedFactors = normalizeFactorWeights(request.factorWeightMode, request.factorWeights)
         val strategy = strategyRepository.findById(strategyId).orElseThrow { ResourceNotFoundException("전략을 찾을 수 없습니다.") }
+        val previousUpdatedAt = strategy.updatedAt
+        val previousFactors = loadStrategyFactorWeights(strategyId)
+        val previousFingerprint = buildAnalysisFingerprint(strategy, previousFactors)
+        val normalizedFactors = normalizeFactorWeights(request.factorWeightMode, request.factorWeights)
+        val serializedUniverseScope = serializeBacktestUniverseScope(objectMapper, request.universeScope)
+        val analysisFingerprint = buildAnalysisFingerprint(
+            roe = request.roe,
+            pbr = request.pbr,
+            momentum = request.momentum,
+            stockCount = request.stockCount,
+            rebalance = request.rebalance,
+            factorWeightMode = request.factorWeightMode,
+            factorWeights = normalizedFactors,
+            universeScopeJson = serializedUniverseScope,
+        )
         if (strategy.status == "DELETED") {
             throw ValidationException("삭제된 전략은 수정할 수 없습니다.")
         }
@@ -240,11 +386,24 @@ class StrategyService(
         strategy.stockCount = request.stockCount
         strategy.rebalancePeriod = request.rebalance
         strategy.factorWeightMode = request.factorWeightMode.uppercase()
+        strategy.universeScopeJson = serializedUniverseScope
         strategyRepository.save(strategy)
         saveStrategyFactors(strategy, normalizedFactors)
+        if (analysisFingerprint == previousFingerprint) {
+            val reusableJob = findLatestCompletedStrategyAnalysisJob(strategyId, previousUpdatedAt, analysisFingerprint)
+            if (reusableJob != null) {
+                return strategyResponseFromAnalysisJob(
+                    strategyId = strategy.id!!,
+                    latestAnalysisJob = reusableJob,
+                    analysisSourceJob = reusableJob,
+                    message = "분석 조건이 동일하여 기존 후보 종목 결과를 재사용했습니다.",
+                )
+            }
+        }
         val analysisJobId = strategyAnalysisDispatcher.enqueueAfterCommit(
             strategyId = strategy.id!!,
             strategyUpdatedAt = strategy.updatedAt,
+            analysisFingerprint = analysisFingerprint,
             payload = buildCandidatePayload(request),
         )
         return queuedStrategyResponse(strategy.id!!, analysisJobId)
@@ -290,6 +449,7 @@ class StrategyService(
                 weightingMethod = strategy.weightingMethod,
                 factorWeightMode = strategy.factorWeightMode,
                 factorWeights = factorWeights,
+                universeScope = parseBacktestUniverseScope(objectMapper, strategy.universeScopeJson),
                 status = strategy.status,
                 createdAt = strategy.createdAt ?: OffsetDateTime.now(),
                 latestBacktest = latestBacktests[strategyId]?.toBacktestSnapshot(),
@@ -303,7 +463,8 @@ class StrategyService(
         if (strategy.status == "DELETED") {
             throw ValidationException("삭제된 전략은 진단할 수 없습니다.")
         }
-        val latestAnalysisJob = findLatestStrategyAnalysisJob(strategyId, strategy.updatedAt)
+        val analysisFingerprint = buildAnalysisFingerprint(strategy, loadStrategyFactorWeights(strategyId))
+        val latestAnalysisJob = findLatestStrategyAnalysisJob(strategyId, strategy.updatedAt, analysisFingerprint)
         if (latestAnalysisJob == null) {
             return StrategyDiagnosticsDto(
                 strategyId = strategyId,
@@ -316,7 +477,7 @@ class StrategyService(
         val analysisSourceJob = if (latestAnalysisJob.status == "COMPLETED") {
             latestAnalysisJob
         } else {
-            findLatestCompletedStrategyAnalysisJob(strategyId, strategy.updatedAt)
+            findLatestCompletedStrategyAnalysisJob(strategyId, strategy.updatedAt, analysisFingerprint)
         }
         val analysis = if (analysisSourceJob != null) {
             val metadata = parseStrategyAnalysisMetadata(objectMapper, analysisSourceJob.metadataJson)
@@ -464,6 +625,7 @@ class StrategyService(
         return result
     }
 
+    @Transactional(readOnly = true)
     fun getStrategyRuns(): List<StrategyRunDto> = strategyRunRepository.findTop20ByOrderByCreatedAtDesc()
         .mapNotNull { run ->
             val id = run.id ?: return@mapNotNull null
@@ -511,7 +673,7 @@ class StrategyService(
             )
         }
 
-    private fun buildCandidatePayload(request: StrategyCreateRequest): Map<String, Any> = mapOf(
+    private fun buildCandidatePayload(request: StrategyCreateRequest): Map<String, Any> = mutableMapOf<String, Any>(
         "roe" to request.roe,
         "pbr" to request.pbr,
         "momentum" to request.momentum,
@@ -519,9 +681,11 @@ class StrategyService(
         "rebalance" to request.rebalance,
         "factorWeightMode" to request.factorWeightMode,
         "factorWeights" to request.factorWeights.map { mapOf("factorName" to it.factorName, "factorWeight" to it.factorWeight) },
-    )
+    ).apply {
+        request.universeScope?.let { put("universeScope", buildUniverseScopePayload(it)) }
+    }
 
-    private fun buildCandidatePayload(request: StrategyUpdateRequest): Map<String, Any> = mapOf(
+    private fun buildCandidatePayload(request: StrategyUpdateRequest): Map<String, Any> = mutableMapOf<String, Any>(
         "roe" to request.roe,
         "pbr" to request.pbr,
         "momentum" to request.momentum,
@@ -529,7 +693,9 @@ class StrategyService(
         "rebalance" to request.rebalance,
         "factorWeightMode" to request.factorWeightMode,
         "factorWeights" to request.factorWeights.map { mapOf("factorName" to it.factorName, "factorWeight" to it.factorWeight) },
-    )
+    ).apply {
+        request.universeScope?.let { put("universeScope", buildUniverseScopePayload(it)) }
+    }
 
     private fun queuedStrategyResponse(strategyId: Long, analysisJobId: Long): StrategyCreateResponse = StrategyCreateResponse(
         strategyId = strategyId,
@@ -540,30 +706,123 @@ class StrategyService(
         analysisMessage = "전략 저장은 완료되었고 후보 종목 분석은 백그라운드에서 진행됩니다.",
     )
 
-    private fun findLatestStrategyAnalysisJob(strategyId: Long, strategyUpdatedAt: OffsetDateTime?): Job? {
-        val expectedUpdatedAt = strategyUpdatedAt?.toString()
+    private fun strategyResponseFromAnalysisJob(
+        strategyId: Long,
+        latestAnalysisJob: Job,
+        analysisSourceJob: Job? = latestAnalysisJob,
+        message: String? = latestAnalysisJob.message,
+    ): StrategyCreateResponse {
+        val analysis = if (analysisSourceJob != null) {
+            val metadata = parseStrategyAnalysisMetadata(objectMapper, analysisSourceJob.metadataJson)
+            @Suppress("UNCHECKED_CAST")
+            mapStrategyCandidateAnalysis(metadata as Map<String, Any>)
+        } else {
+            emptyList<FactorCandidateDto>() to emptyStrategyCandidateDiagnostics()
+        }
+        return StrategyCreateResponse(
+            strategyId = strategyId,
+            candidates = analysis.first,
+            diagnostics = analysis.second,
+            analysisJobId = latestAnalysisJob.id,
+            analysisStatus = latestAnalysisJob.status,
+            analysisMessage = message,
+        )
+    }
+
+    private fun findLatestStrategyAnalysisJob(
+        strategyId: Long,
+        strategyUpdatedAt: OffsetDateTime?,
+        analysisFingerprint: String,
+    ): Job? {
         return jobRepository.findTop200ByJobTypeOrderByCreatedAtDesc("strategy_candidate_analysis")
             .firstOrNull { job ->
-                val metadata = parseStrategyAnalysisMetadata(objectMapper, job.metadataJson)
-                val metadataStrategyId = (metadata["strategyId"] as? Number)?.toLong()
-                val metadataUpdatedAt = metadata["strategyUpdatedAt"]?.toString()
-                metadataStrategyId == strategyId && metadataUpdatedAt == expectedUpdatedAt
+                matchesStrategyAnalysisJob(job, strategyId, strategyUpdatedAt, analysisFingerprint)
             }
     }
 
-    private fun findLatestCompletedStrategyAnalysisJob(strategyId: Long, strategyUpdatedAt: OffsetDateTime?): Job? {
-        val expectedUpdatedAt = strategyUpdatedAt?.toString()
+    private fun findLatestCompletedStrategyAnalysisJob(
+        strategyId: Long,
+        strategyUpdatedAt: OffsetDateTime?,
+        analysisFingerprint: String,
+    ): Job? {
         return jobRepository.findTop200ByJobTypeOrderByCreatedAtDesc("strategy_candidate_analysis")
             .firstOrNull { job ->
                 if (job.status != "COMPLETED") {
                     return@firstOrNull false
                 }
-                val metadata = parseStrategyAnalysisMetadata(objectMapper, job.metadataJson)
-                val metadataStrategyId = (metadata["strategyId"] as? Number)?.toLong()
-                val metadataUpdatedAt = metadata["strategyUpdatedAt"]?.toString()
-                metadataStrategyId == strategyId && metadataUpdatedAt == expectedUpdatedAt
+                matchesStrategyAnalysisJob(job, strategyId, strategyUpdatedAt, analysisFingerprint)
             }
     }
+
+    private fun matchesStrategyAnalysisJob(
+        job: Job,
+        strategyId: Long,
+        strategyUpdatedAt: OffsetDateTime?,
+        analysisFingerprint: String,
+    ): Boolean {
+        val metadata = parseStrategyAnalysisMetadata(objectMapper, job.metadataJson)
+        val metadataStrategyId = (metadata["strategyId"] as? Number)?.toLong()
+        if (metadataStrategyId != strategyId) {
+            return false
+        }
+        val metadataFingerprint = metadata["analysisFingerprint"]?.toString()?.takeIf { it.isNotBlank() }
+        if (metadataFingerprint != null) {
+            return metadataFingerprint == analysisFingerprint
+        }
+        val metadataUpdatedAt = metadata["strategyUpdatedAt"]?.toString()
+        return metadataUpdatedAt == strategyUpdatedAt?.toString()
+    }
+
+    private fun loadStrategyFactorWeights(strategyId: Long): Map<String, BigDecimal> = strategyFactorRepository.findByStrategyId(strategyId)
+        .associate { factor ->
+            factor.factorName.lowercase() to (factor.factorWeight ?: BigDecimal.ZERO)
+        }
+
+    private fun buildAnalysisFingerprint(strategy: Strategy, factorWeights: Map<String, BigDecimal>): String = buildAnalysisFingerprint(
+        roe = strategy.roeFilter ?: BigDecimal.ZERO,
+        pbr = strategy.pbrFilter ?: BigDecimal.ZERO,
+        momentum = strategy.momentumFilter ?: BigDecimal.ZERO,
+        stockCount = strategy.stockCount ?: 0,
+        rebalance = strategy.rebalancePeriod ?: "monthly",
+        factorWeightMode = strategy.factorWeightMode,
+        factorWeights = factorWeights,
+        universeScopeJson = canonicalUniverseScopeFingerprint(strategy.universeScopeJson),
+    )
+
+    private fun buildAnalysisFingerprint(
+        roe: BigDecimal,
+        pbr: BigDecimal,
+        momentum: BigDecimal,
+        stockCount: Int,
+        rebalance: String,
+        factorWeightMode: String,
+        factorWeights: Map<String, BigDecimal>,
+        universeScopeJson: String?,
+    ): String {
+        val factorPart = factorWeights.toSortedMap().entries.joinToString(",") { (factorName, factorWeight) ->
+            "$factorName:${normalizeFingerprintDecimal(factorWeight)}"
+        }
+        return listOf(
+            "roe=${normalizeFingerprintDecimal(roe)}",
+            "pbr=${normalizeFingerprintDecimal(pbr)}",
+            "momentum=${normalizeFingerprintDecimal(momentum)}",
+            "stockCount=$stockCount",
+            "rebalance=${rebalance.lowercase()}",
+            "factorWeightMode=${factorWeightMode.uppercase()}",
+            "factorWeights=$factorPart",
+            "universeScope=${universeScopeJson?.ifBlank { "default" } ?: "default"}",
+        ).joinToString("|")
+    }
+
+    private fun canonicalUniverseScopeFingerprint(rawJson: String?): String? {
+        val scope = parseBacktestUniverseScope(objectMapper, rawJson) ?: return rawJson
+        return objectMapper.writeValueAsString(buildUniverseScopePayload(scope))
+    }
+
+    private fun normalizeFingerprintDecimal(value: BigDecimal): String = value
+        .setScale(6, RoundingMode.HALF_UP)
+        .stripTrailingZeros()
+        .toPlainString()
 
     private fun saveStrategyFactors(strategy: Strategy, weights: Map<String, BigDecimal>) {
         val strategyId = strategy.id ?: throw ValidationException("전략 식별자가 없어 팩터 가중치를 저장할 수 없습니다.")
@@ -667,6 +926,28 @@ class BacktestService(
     private val jobRepository: JobRepository,
     private val objectMapper: ObjectMapper,
 ) {
+    private fun parseUniverseScope(raw: Any?): BacktestUniverseScopeDto? {
+        if (raw == null) {
+            return null
+        }
+        return try {
+            when (raw) {
+                is String -> parseBacktestUniverseScope(objectMapper, raw)
+                else -> objectMapper.convertValue(raw, BacktestUniverseScopeDto::class.java)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun resolveEffectiveUniverseScope(strategy: Strategy, requestScope: BacktestUniverseScopeRequest?): BacktestUniverseScopeRequest? {
+        if (!isStrategyDefaultUniverseScope(requestScope)) {
+            return requestScope
+        }
+        val strategyScope = parseBacktestUniverseScope(objectMapper, strategy.universeScopeJson)?.toRequest()
+        return strategyScope ?: requestScope
+    }
+
     @Transactional
     fun runBacktest(request: BacktestRequest): BacktestQueueResponseDto {
         if (request.startDate.isAfter(request.endDate)) {
@@ -690,6 +971,50 @@ class BacktestService(
             "factorWeights" to snapshotWeights,
         )
         request.snapshotId?.let { payload["snapshotId"] = it }
+        resolveEffectiveUniverseScope(strategy, request.universeScope)?.let { payload["universeScope"] = buildUniverseScopePayload(it) }
+        if (request.patternDefinitions.isNotEmpty()) {
+            payload["patternDefinitions"] = request.patternDefinitions.map { definition ->
+                mapOf(
+                    "id" to definition.id,
+                    "name" to definition.name,
+                    "shortLabel" to definition.shortLabel,
+                    "category" to definition.category,
+                    "thesis" to definition.thesis,
+                    "ruleSummary" to definition.ruleSummary,
+                    "lookbackDays" to definition.lookbackDays,
+                    "breakoutPercent" to definition.breakoutPercent,
+                    "holdingDays" to definition.holdingDays,
+                    "momentumThreshold" to definition.momentumThreshold,
+                    "slopeThreshold" to definition.slopeThreshold,
+                    "volumeSurgePercent" to definition.volumeSurgePercent,
+                    "sweepBufferPercent" to definition.sweepBufferPercent,
+                    "maxReentryBars" to definition.maxReentryBars,
+                    "wickRatioThreshold" to definition.wickRatioThreshold,
+                    "closeRecoveryPercent" to definition.closeRecoveryPercent,
+                    "minGapPercent" to definition.minGapPercent,
+                    "minFillPercent" to definition.minFillPercent,
+                    "maxConfirmationBars" to definition.maxConfirmationBars,
+                    "stopLossPercent" to definition.stopLossPercent,
+                    "target1Percent" to definition.target1Percent,
+                    "target2Percent" to definition.target2Percent,
+                    "entryMode" to definition.entryMode,
+                    "exitMode" to definition.exitMode,
+                    "enabled" to definition.enabled,
+                    "source" to definition.source,
+                )
+            }
+        }
+        request.signalPlan?.let { signalPlan ->
+            payload["signalPlan"] = mapOf(
+                "buyMode" to signalPlan.buyMode,
+                "sellMode" to signalPlan.sellMode,
+                "holdMode" to signalPlan.holdMode,
+                "maxHoldingDays" to signalPlan.maxHoldingDays,
+                "stopLossPercent" to signalPlan.stopLossPercent,
+                "takeProfitPercent" to signalPlan.takeProfitPercent,
+                "rebalanceGuard" to signalPlan.rebalanceGuard,
+            )
+        }
         val result = pythonQuantEngineClient.runBacktest(payload)
         return BacktestQueueResponseDto(
             accepted = result["accepted"] as? Boolean ?: false,
@@ -708,11 +1033,22 @@ class BacktestService(
             status = job.status,
             message = job.message,
             backtestId = (metadata["backtestId"] as? Number)?.toLong(),
+            strategyId = (metadata["strategyId"] as? Number)?.toLong(),
+            snapshotId = (metadata["snapshotId"] as? Number)?.toLong(),
+            startDate = metadata["startDate"]?.toString(),
+            endDate = metadata["endDate"]?.toString(),
+            universeScope = parseUniverseScope(metadata["universeScope"]),
             rebalanceCount = (metadata["rebalanceCount"] as? Number)?.toInt(),
             averageSelectionCount = (metadata["averageSelectionCount"] as? Number)?.toDouble(),
             latestSelectionCount = (metadata["latestSelectionCount"] as? Number)?.toInt(),
+            progressPercent = (metadata["progressPercent"] as? Number)?.toInt(),
+            stage = metadata["stage"]?.toString(),
+            stageLabel = metadata["stageLabel"]?.toString(),
+            processedCount = (metadata["processedCount"] as? Number)?.toInt(),
+            totalCount = (metadata["totalCount"] as? Number)?.toInt(),
             startedAt = job.startedAt,
             finishedAt = job.finishedAt,
+            updatedAt = job.updatedAt,
         )
     }
 
@@ -733,6 +1069,7 @@ class BacktestService(
                 strategyName = strategy.name,
                 snapshotId = backtest.snapshot?.id,
                 snapshotName = backtest.snapshot?.name,
+                universeScope = parseJsonValue(backtest.universeScopeJson),
                 startDate = backtest.startDate?.toString(),
                 endDate = backtest.endDate?.toString(),
                 cagr = backtest.cagr,
@@ -762,9 +1099,15 @@ class BacktestService(
             sharpe = backtest.sharpe,
             maxDrawdown = backtest.maxDrawdown,
             winRate = backtest.winRate,
+            universeScope = parseJsonValue(backtest.universeScopeJson),
             equityCurve = equityCurve,
             drawdownCurve = calculateDrawdownCurve(equityCurve),
             monthlyReturns = calculateMonthlyReturns(equityCurve),
+            stockBreakdown = parseJsonValue(backtest.stockBreakdownJson) ?: emptyList(),
+            patternBreakdown = parseJsonValue(backtest.patternBreakdownJson) ?: emptyList(),
+            tradeLog = parseJsonValue(backtest.tradeLogJson) ?: emptyList(),
+            signalTimeline = parseJsonValue(backtest.signalTimelineJson) ?: emptyList(),
+            researchConfig = parseJsonValue(backtest.researchConfigJson),
         )
     }
 
@@ -813,6 +1156,17 @@ class BacktestService(
             objectMapper.readValue(metadataJson, Map::class.java) as Map<String, Any?>
         } catch (_: Exception) {
             emptyMap()
+        }
+    }
+
+    private inline fun <reified T> parseJsonValue(rawJson: String?): T? {
+        if (rawJson.isNullOrBlank()) {
+            return null
+        }
+        return try {
+            objectMapper.readValue(rawJson, object : TypeReference<T>() {})
+        } catch (_: Exception) {
+            null
         }
     }
 }

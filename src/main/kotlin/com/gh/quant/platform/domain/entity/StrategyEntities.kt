@@ -34,6 +34,9 @@ class Strategy(
     var weightingMethod: String? = null,
     @Column(name = "factor_weight_mode", nullable = false, length = 20)
     var factorWeightMode: String = "AUTO",
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "universe_scope_json", columnDefinition = "jsonb")
+    var universeScopeJson: String? = null,
     @Column(nullable = false, length = 50)
     var status: String = "DRAFT",
 ) : BaseEntity()
@@ -88,6 +91,24 @@ class Backtest(
     var volatility: BigDecimal? = null,
     @Column(name = "win_rate", precision = 20, scale = 6)
     var winRate: BigDecimal? = null,
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "stock_breakdown_json", columnDefinition = "jsonb")
+    var stockBreakdownJson: String? = null,
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "pattern_breakdown_json", columnDefinition = "jsonb")
+    var patternBreakdownJson: String? = null,
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "trade_log_json", columnDefinition = "jsonb")
+    var tradeLogJson: String? = null,
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "signal_timeline_json", columnDefinition = "jsonb")
+    var signalTimelineJson: String? = null,
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "research_config_json", columnDefinition = "jsonb")
+    var researchConfigJson: String? = null,
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "universe_scope_json", columnDefinition = "jsonb")
+    var universeScopeJson: String? = null,
 ) : BaseEntity()
 
 @Entity

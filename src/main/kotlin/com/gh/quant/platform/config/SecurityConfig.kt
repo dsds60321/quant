@@ -11,7 +11,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource
 
 @Configuration
 class SecurityConfig(
-    @Value("\${platform.cors.allowed-origins:http://localhost:3000}") private val corsAllowedOrigins: String,
+    @Value("\${platform.cors.allowed-origins:http://localhost:3000,http://127.0.0.1:3000}") private val corsAllowedOrigins: String,
 ) {
     @Bean
     fun securityFilterChain(http: HttpSecurity): SecurityFilterChain = http
@@ -24,7 +24,7 @@ class SecurityConfig(
     fun corsConfigurationSource(): CorsConfigurationSource {
         val configuredOrigins = corsAllowedOrigins.split(",").map { it.trim() }.filter { it.isNotEmpty() }
         val configuration = CorsConfiguration().apply {
-            allowedOrigins = configuredOrigins
+            allowedOriginPatterns = configuredOrigins
             allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
             allowedHeaders = listOf("*")
             allowCredentials = true

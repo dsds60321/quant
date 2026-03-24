@@ -102,6 +102,12 @@ class Backtest(TimestampMixin, Base):
     max_drawdown: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
     volatility: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
     win_rate: Mapped[Decimal | None] = mapped_column(Numeric(20, 6), nullable=True)
+    stock_breakdown_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pattern_breakdown_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    trade_log_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    signal_timeline_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    research_config_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    universe_scope_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class BacktestEquity(TimestampMixin, Base):

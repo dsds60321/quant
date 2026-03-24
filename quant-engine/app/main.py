@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.exceptions import register_exception_handlers
 from app.logging_config import configure_logging
 from app.schemas.common import ApiResponse, HealthResponse
+from app.services.backtest_dispatcher import BacktestDispatcher
 
 configure_logging()
 settings = get_settings()
@@ -29,6 +30,11 @@ app.include_router(risk_router)
 app.include_router(data_router)
 app.include_router(news_router)
 app.include_router(stock_router)
+
+
+@app.on_event("startup")
+def startup_recovery():
+    BacktestDispatcher.recover_orphaned_jobs("quant-engine 재시작으로 이전 백테스트 작업을 자동 실패 처리했습니다.")
 
 
 @app.get("/health")

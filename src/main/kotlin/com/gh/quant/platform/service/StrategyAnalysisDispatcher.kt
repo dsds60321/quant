@@ -89,6 +89,7 @@ class StrategyAnalysisDispatcher(
     fun enqueueAfterCommit(
         strategyId: Long,
         strategyUpdatedAt: OffsetDateTime?,
+        analysisFingerprint: String,
         payload: Map<String, Any>,
     ): Long {
         val job = jobRepository.save(
@@ -99,6 +100,7 @@ class StrategyAnalysisDispatcher(
                 metadataJson = writeMetadata(
                     strategyId = strategyId,
                     strategyUpdatedAt = strategyUpdatedAt,
+                    analysisFingerprint = analysisFingerprint,
                     stage = "queued",
                     stageLabel = "대기 중",
                     progressPercent = 0,
@@ -112,6 +114,7 @@ class StrategyAnalysisDispatcher(
                     jobId = jobId,
                     strategyId = strategyId,
                     strategyUpdatedAt = strategyUpdatedAt,
+                    analysisFingerprint = analysisFingerprint,
                     payload = payload,
                 )
             }
@@ -134,6 +137,7 @@ class StrategyAnalysisDispatcher(
         jobId: Long,
         strategyId: Long,
         strategyUpdatedAt: OffsetDateTime?,
+        analysisFingerprint: String,
         payload: Map<String, Any>,
     ) {
         try {
@@ -145,6 +149,7 @@ class StrategyAnalysisDispatcher(
                 runningJob.metadataJson = writeMetadata(
                     strategyId = strategyId,
                     strategyUpdatedAt = strategyUpdatedAt,
+                    analysisFingerprint = analysisFingerprint,
                     stage = "analyzing",
                     stageLabel = "후보 분석",
                     progressPercent = 15,
@@ -161,6 +166,7 @@ class StrategyAnalysisDispatcher(
                 completedJob.metadataJson = writeMetadata(
                     strategyId = strategyId,
                     strategyUpdatedAt = strategyUpdatedAt,
+                    analysisFingerprint = analysisFingerprint,
                     stage = "completed",
                     stageLabel = "완료",
                     progressPercent = 100,
@@ -179,6 +185,7 @@ class StrategyAnalysisDispatcher(
                 failedJob.metadataJson = writeMetadata(
                     strategyId = strategyId,
                     strategyUpdatedAt = strategyUpdatedAt,
+                    analysisFingerprint = analysisFingerprint,
                     stage = "failed",
                     stageLabel = "실패",
                     progressPercent = 100,
@@ -192,6 +199,7 @@ class StrategyAnalysisDispatcher(
     private fun writeMetadata(
         strategyId: Long,
         strategyUpdatedAt: OffsetDateTime?,
+        analysisFingerprint: String,
         stage: String,
         stageLabel: String,
         progressPercent: Int,
@@ -203,6 +211,7 @@ class StrategyAnalysisDispatcher(
             "kind" to "strategyAnalysis",
             "strategyId" to strategyId,
             "strategyUpdatedAt" to strategyUpdatedAt?.toString(),
+            "analysisFingerprint" to analysisFingerprint,
             "progressPercent" to progressPercent,
             "stage" to stage,
             "stageLabel" to stageLabel,

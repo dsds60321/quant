@@ -22,12 +22,12 @@ class StockRepository:
                 VALUES (:symbol, :name, :exchange, :sector, :industry, :currency, :market_cap, NOW(), NOW())
                 ON CONFLICT (symbol)
                 DO UPDATE SET
-                    name = EXCLUDED.name,
-                    exchange = EXCLUDED.exchange,
-                    sector = EXCLUDED.sector,
-                    industry = EXCLUDED.industry,
-                    currency = EXCLUDED.currency,
-                    market_cap = EXCLUDED.market_cap,
+                    name = COALESCE(NULLIF(EXCLUDED.name, ''), stocks.name),
+                    exchange = COALESCE(NULLIF(EXCLUDED.exchange, ''), stocks.exchange),
+                    sector = COALESCE(NULLIF(EXCLUDED.sector, ''), stocks.sector),
+                    industry = COALESCE(NULLIF(EXCLUDED.industry, ''), stocks.industry),
+                    currency = COALESCE(NULLIF(EXCLUDED.currency, ''), stocks.currency),
+                    market_cap = COALESCE(EXCLUDED.market_cap, stocks.market_cap),
                     updated_at = NOW()
                 """
             ),
@@ -36,23 +36,49 @@ class StockRepository:
         self.session.flush()
         return len(rows)
 
+    def get_snapshot_by_symbol(self, symbol: str) -> dict | None:
+        stmt = (
+            select(Stock.name, Stock.exchange, Stock.sector, Stock.industry, Stock.currency, Stock.market_cap)
+            .where(Stock.symbol == symbol)
+            .limit(1)
+        )
+        row = self.session.execute(stmt).first()
+        if row is None:
+            return None
+        name, exchange, sector, industry, currency, market_cap = row
+        return {
+            "name": name,
+            "exchange": exchange,
+            "sector": sector,
+            "industry": industry,
+            "currency": currency,
+            "market_cap": float(market_cap) if market_cap is not None else None,
+        }
+
+    def get_name_by_symbol(self, symbol: str) -> str | None:
+        stmt = select(Stock.name).where(Stock.symbol == symbol).limit(1)
+        name = self.session.execute(stmt).scalar_one_or_none()
+        if name is None:
+            return None
+        return str(name)
+
     def get_metadata_frame(self, symbols: list[str] | None = None) -> pd.DataFrame:
-        stmt = select(Stock)
+        stmt = select(Stock.symbol, Stock.name, Stock.exchange, Stock.sector, Stock.industry, Stock.currency, Stock.market_cap)
         if symbols:
             stmt = stmt.where(Stock.symbol.in_(symbols))
-        rows = self.session.scalars(stmt).all()
+        rows = self.session.execute(stmt).all()
         return pd.DataFrame(
             [
                 {
-                    "symbol": row.symbol,
-                    "name": row.name,
-                    "exchange": row.exchange,
-                    "sector": row.sector,
-                    "industry": row.industry,
-                    "currency": row.currency,
-                    "market_cap": float(row.market_cap) if row.market_cap is not None else None,
+                    "symbol": symbol,
+                    "name": name,
+                    "exchange": exchange,
+                    "sector": sector,
+                    "industry": industry,
+                    "currency": currency,
+                    "market_cap": float(market_cap) if market_cap is not None else None,
                 }
-                for row in rows
+                for symbol, name, exchange, sector, industry, currency, market_cap in rows
             ]
         )
 

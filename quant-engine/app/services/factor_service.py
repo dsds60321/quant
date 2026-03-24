@@ -28,6 +28,23 @@ class FactorService:
         self.insider_trade_repository = InsiderTradeRepository(session)
         self.scoring_engine = ScoringEngine()
 
+    @staticmethod
+    def _is_direct_selection_mode(universe_config) -> bool:
+        return bool(
+            universe_config is not None
+            and universe_config.force_include_allowed_symbols
+            and universe_config.allowed_symbols
+        )
+
+    @staticmethod
+    def _fundamental_ready_count(frame: pd.DataFrame) -> int:
+        if frame.empty:
+            return 0
+        fundamental_columns = [column for column in ["per", "pbr", "roe", "market_cap"] if column in frame.columns]
+        if not fundamental_columns:
+            return 0
+        return int(frame[frame[fundamental_columns].notna().any(axis=1)]["symbol"].nunique())
+
     def _build_diagnostics(
         self,
         eligible: list[str],
@@ -36,6 +53,8 @@ class FactorService:
         factor_frame: pd.DataFrame,
         selected: pd.DataFrame,
         strategy: StrategySnapshot,
+        requested_symbol_count: int | None = None,
+        universe_config=None,
     ) -> UniverseDiagnostics:
         total_symbols = 0
         price_ready_count = 0
@@ -45,7 +64,9 @@ class FactorService:
         momentum_pass_count = 0
 
         metadata = self.universe_service.stock_repository.get_metadata_frame()
-        if not metadata.empty:
+        if requested_symbol_count is not None:
+            total_symbols = requested_symbol_count
+        elif not metadata.empty:
             total_symbols = int(
                 metadata.apply(
                     lambda row: self.universe_service._is_factor_eligible_instrument(str(row["symbol"]), row.get("name")),
@@ -57,27 +78,26 @@ class FactorService:
 
         price_ready_count = len(set(eligible))
         if not factor_frame.empty:
-            fundamental_columns = [column for column in ["per", "pbr", "roe", "market_cap"] if column in factor_frame.columns]
-            if fundamental_columns:
-                fundamentals_ready_count = int(
-                    factor_frame[factor_frame[fundamental_columns].notna().any(axis=1)]["symbol"].nunique()
-                )
+            fundamentals_ready_count = self._fundamental_ready_count(factor_frame)
+            if self._is_direct_selection_mode(universe_config):
+                roe_pass_count = fundamentals_ready_count
+                pbr_pass_count = fundamentals_ready_count
+                momentum_pass_count = fundamentals_ready_count
             else:
-                fundamentals_ready_count = 0
-            after_roe = factor_frame.copy()
-            if strategy.roe_filter is not None:
-                after_roe = after_roe[after_roe["roe"].isna() | (after_roe["roe"] >= float(strategy.roe_filter))]
-            roe_pass_count = int(after_roe["symbol"].nunique())
+                after_roe = factor_frame.copy()
+                if strategy.roe_filter is not None:
+                    after_roe = after_roe[after_roe["roe"].isna() | (after_roe["roe"] >= float(strategy.roe_filter))]
+                roe_pass_count = int(after_roe["symbol"].nunique())
 
-            after_pbr = after_roe.copy()
-            if strategy.pbr_filter is not None:
-                after_pbr = after_pbr[after_pbr["pbr"].isna() | (after_pbr["pbr"] <= float(strategy.pbr_filter))]
-            pbr_pass_count = int(after_pbr["symbol"].nunique())
+                after_pbr = after_roe.copy()
+                if strategy.pbr_filter is not None:
+                    after_pbr = after_pbr[after_pbr["pbr"].isna() | (after_pbr["pbr"] <= float(strategy.pbr_filter))]
+                pbr_pass_count = int(after_pbr["symbol"].nunique())
 
-            after_momentum = after_pbr.copy()
-            if strategy.momentum_filter is not None:
-                after_momentum = after_momentum[after_momentum["momentum_raw"].isna() | (after_momentum["momentum_raw"] >= float(strategy.momentum_filter))]
-            momentum_pass_count = int(after_momentum["symbol"].nunique())
+                after_momentum = after_pbr.copy()
+                if strategy.momentum_filter is not None:
+                    after_momentum = after_momentum[after_momentum["momentum_raw"].isna() | (after_momentum["momentum_raw"] >= float(strategy.momentum_filter))]
+                momentum_pass_count = int(after_momentum["symbol"].nunique())
 
         return UniverseDiagnostics(
             total_symbols=total_symbols,
@@ -105,7 +125,7 @@ class FactorService:
         )
         factor_frame = self.factor_engine.calculate(context, eligible)
         self.factor_repository.replace_for_date(as_of_date, factor_frame)
-        selected = self.scoring_engine.score(factor_frame, strategy)
+        selected = self.scoring_engine.score(factor_frame, strategy, request.universe)
         return [
             FactorSnapshot(
                 symbol=row["symbol"],
@@ -122,9 +142,19 @@ class FactorService:
 
     def analyze_candidates(self, request: FactorCalculationRequest, strategy: StrategySnapshot) -> CandidateAnalysisResponse:
         as_of_date = request.as_of_date or date.today()
+        requested_symbol_count = len(request.universe.allowed_symbols) if request.universe.allowed_symbols is not None else None
         eligible, price_frame, fundamental_frame, fundamental_history = self.universe_service.build_universe(as_of_date, request.universe)
         if price_frame.empty or not eligible:
-            diagnostics = self._build_diagnostics(eligible, price_frame, fundamental_frame, pd.DataFrame(), pd.DataFrame(), strategy)
+            diagnostics = self._build_diagnostics(
+                eligible,
+                price_frame,
+                fundamental_frame,
+                pd.DataFrame(),
+                pd.DataFrame(),
+                strategy,
+                requested_symbol_count=requested_symbol_count,
+                universe_config=request.universe,
+            )
             return CandidateAnalysisResponse(candidates=[], diagnostics=diagnostics)
 
         context = FactorContext(
@@ -138,8 +168,17 @@ class FactorService:
         )
         factor_frame = self.factor_engine.calculate(context, eligible)
         self.factor_repository.replace_for_date(as_of_date, factor_frame)
-        selected = self.scoring_engine.score(factor_frame, strategy)
-        diagnostics = self._build_diagnostics(eligible, price_frame, fundamental_frame, factor_frame, selected, strategy)
+        selected = self.scoring_engine.score(factor_frame, strategy, request.universe)
+        diagnostics = self._build_diagnostics(
+            eligible,
+            price_frame,
+            fundamental_frame,
+            factor_frame,
+            selected,
+            strategy,
+            requested_symbol_count=requested_symbol_count,
+            universe_config=request.universe,
+        )
         candidates = [
             CandidateResponse(symbol=row["symbol"], score=float(row.get("final_score") or 0.0))
             for row in selected.to_dict(orient="records")

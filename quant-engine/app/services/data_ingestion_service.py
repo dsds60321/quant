@@ -25,6 +25,7 @@ from app.repositories.stock_repository import StockRepository
 from app.schemas.data import DataStatusResponse, DataUpdateRequest, DataUpdateResult, StockRegisterRequest, StockRegisterResponse, StockSearchResult
 from app.schemas.common import JobSummary
 from app.services.sec_company_facts_service import SecCompanyFactsService
+from app.services.sector_taxonomy import normalize_sector_label
 from app.services.structured_event_service import StructuredEventService
 
 logger = logging.getLogger(__name__)
@@ -77,10 +78,14 @@ class _SimpleHtmlTableParser(HTMLParser):
             self.in_table = False
 
 class DataIngestionService:
+    _kr_listing_cache: tuple[float, list[dict[str, object]]] | None = None
+    _kr_listing_cache_ttl_seconds = 60 * 60 * 6
     etf_name_tokens = (
         "etf", "etn", "fund", "trust", "spdr", "ishares", "vanguard", "invesco", "wisdomtree",
         "proshares", "direxion", "global x", "first trust", "schwab", "ark", "kodex", "tiger",
-        "arirang", "kbstar", "ace", "sol",
+        "arirang", "kbstar", "ace", "sol", "vaneck", "victoryshares", "glaciershares",
+        "defiance", "leverage shares", "yieldmax", "roundhill", "themes", "graniteshares",
+        "simplify", "pacer", "kraneshares", "cambria", "robo global", "bitwise",
     )
     unsupported_security_name_tokens = (
         "warrant", "rights", "right", "unit", "units", "preferred", "preference", "depositary share",
@@ -510,7 +515,10 @@ class DataIngestionService:
     def _resolve_market_type(self, exchange: str) -> str:
         return "DOMESTIC" if exchange.lower() in {"kospi", "kosdaq", "krx", "xkrx", "kse", "ksq"} else "INTERNATIONAL"
 
-    def _resolve_asset_group(self, exchange: str, name: str, market_type: str) -> str:
+    def _resolve_asset_group(self, exchange: str, name: str, market_type: str, quote_type: str | None = None) -> str:
+        normalized_quote_type = (quote_type or "").strip().upper()
+        if normalized_quote_type == "ETF":
+            return "ETF"
         normalized_name = name.lower()
         if any(token in normalized_name for token in self.etf_name_tokens):
             return "ETF"
@@ -534,15 +542,95 @@ class DataIngestionService:
             return "NYSE"
         return normalized_exchange or "UNKNOWN"
 
+    @staticmethod
+    def _clean_text(value: object | None) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _listing_value(self, row: dict[str, object] | None, *keys: str) -> str | None:
+        if not row:
+            return None
+        normalized = {
+            str(key).replace(" ", "").strip(): value
+            for key, value in row.items()
+        }
+        for key in keys:
+            normalized_key = key.replace(" ", "").strip()
+            if normalized_key in normalized:
+                return self._clean_text(normalized[normalized_key])
+        return None
+
+    def _stock_metadata_needs_profile_hydration(self, row: dict[str, object] | None) -> bool:
+        if not row:
+            return True
+        name = self._clean_text(row.get("name"))
+        exchange = self._clean_text(row.get("exchange"))
+        sector = self._clean_text(row.get("sector"))
+        currency = self._clean_text(row.get("currency"))
+        return not all([name, exchange, currency, sector])
+
+    def _resolve_profile_hydration_symbols(self, symbols: list[str], stock_metadata: pd.DataFrame) -> set[str]:
+        if not symbols:
+            return set()
+        if stock_metadata.empty or "symbol" not in stock_metadata.columns:
+            return set(symbols)
+        metadata_by_symbol = {
+            str(row["symbol"]).upper(): row.to_dict()
+            for _, row in stock_metadata.iterrows()
+        }
+        return {
+            symbol
+            for symbol in symbols
+            if self._stock_metadata_needs_profile_hydration(metadata_by_symbol.get(symbol.upper()))
+        }
+
     def _build_stock_row(self, symbol: str, info: dict, profile: dict) -> dict:
+        provider_name = profile.get("shortName") or profile.get("longName") or info.get("shortName") or symbol
+        existing_snapshot = self.stock_repository.get_snapshot_by_symbol(symbol) or {}
+        existing_name = self._clean_text(existing_snapshot.get("name"))
+        kr_listing = self._find_kr_listing(symbol)
+        preferred_name = str(provider_name)
+        if kr_listing is not None and self._has_hangul(str(kr_listing.get("name") or "")):
+            preferred_name = str(kr_listing.get("name") or preferred_name)
+        elif existing_name and self._has_hangul(existing_name) and not self._has_hangul(preferred_name):
+            preferred_name = existing_name
+
+        exchange = self._normalize_exchange_label(
+            profile.get("exchange") or info.get("exchange") or (kr_listing or {}).get("exchange") or existing_snapshot.get("exchange"),
+            symbol,
+        )
+        currency = self._clean_text(profile.get("currency") or info.get("currency") or existing_snapshot.get("currency")) or (
+            "KRW" if exchange in {"KOSPI", "KOSDAQ"} else "USD"
+        )
+        market_type = self._resolve_market_type(exchange)
+        quote_type = self._clean_text(profile.get("quoteType") or info.get("quoteType"))
+        asset_group = self._resolve_asset_group(exchange, preferred_name, market_type, quote_type)
+        raw_sector = (
+            self._clean_text(profile.get("sector"))
+            or self._clean_text(info.get("sector"))
+            or self._listing_value(kr_listing, "sector", "업종", "섹터")
+            or self._clean_text(existing_snapshot.get("sector"))
+        )
+        industry = (
+            self._clean_text(profile.get("industry"))
+            or self._clean_text(info.get("industry"))
+            or self._listing_value(kr_listing, "industry", "주요제품", "주요 제품", "업종")
+            or self._clean_text(existing_snapshot.get("industry"))
+        )
+        sector = normalize_sector_label(raw_sector, industry, preferred_name, asset_group)
+        if industry is None and asset_group == "ETF":
+            industry = "상장지수펀드"
+
         return {
             "symbol": symbol,
-            "name": profile.get("shortName") or profile.get("longName") or info.get("shortName") or symbol,
-            "exchange": self._normalize_exchange_label(profile.get("exchange") or info.get("exchange"), symbol),
-            "sector": profile.get("sector"),
-            "industry": profile.get("industry"),
-            "currency": profile.get("currency") or info.get("currency") or "USD",
-            "market_cap": info.get("market_cap") or profile.get("marketCap"),
+            "name": preferred_name,
+            "exchange": exchange,
+            "sector": sector,
+            "industry": industry,
+            "currency": currency,
+            "market_cap": info.get("market_cap") or profile.get("marketCap") or existing_snapshot.get("market_cap"),
         }
 
     def _normalize_percentage(self, value: float | int | None) -> float | None:
@@ -747,13 +835,23 @@ class DataIngestionService:
                 name = str(row.get("회사명") or code).strip() or code
                 if not self._is_supported_sync_symbol(f"{code}{suffix}", name):
                     continue
+                resolved_asset_group = self._resolve_asset_group(exchange, name, "DOMESTIC")
+                sector = normalize_sector_label(
+                    self._listing_value(row, "업종", "섹터"),
+                    self._listing_value(row, "주요제품", "주요 제품", "업종"),
+                    name,
+                    resolved_asset_group,
+                )
+                industry = self._listing_value(row, "주요제품", "주요 제품", "업종")
+                if industry is None and resolved_asset_group == "ETF":
+                    industry = "상장지수펀드"
                 discovered.append(
                     {
                         "symbol": f"{code}{suffix}",
                         "name": name,
                         "exchange": exchange,
-                        "sector": None,
-                        "industry": None,
+                        "sector": sector,
+                        "industry": industry,
                         "currency": "KRW",
                         "market_cap": None,
                     }
@@ -765,6 +863,30 @@ class DataIngestionService:
                 int((time.monotonic() - started_at) * 1000),
             )
         return discovered
+
+    @staticmethod
+    def _has_hangul(value: str | None) -> bool:
+        if not value:
+            return False
+        return any("\uac00" <= char <= "\ud7a3" for char in value)
+
+    def _get_kr_listing_rows(self) -> list[dict[str, object]]:
+        cached = self.__class__._kr_listing_cache
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < self.__class__._kr_listing_cache_ttl_seconds:
+            return cached[1]
+        rows = self._discover_kr_equities()
+        self.__class__._kr_listing_cache = (now, rows)
+        return rows
+
+    def _find_kr_listing(self, symbol: str) -> dict[str, object] | None:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol.endswith((".KS", ".KQ")):
+            return None
+        for row in self._get_kr_listing_rows():
+            if str(row.get("symbol") or "").strip().upper() == normalized_symbol:
+                return row
+        return None
 
     def _discover_equity_universe(self) -> list[dict]:
         started_at = time.monotonic()
@@ -835,6 +957,35 @@ class DataIngestionService:
                     seen.add(symbol)
                     if len(results) >= limit:
                         return results
+
+        if self._has_hangul(normalized_query):
+            lowered_query = normalized_query.casefold()
+            for row in self._get_kr_listing_rows():
+                symbol = str(row.get("symbol") or "").strip().upper()
+                name = str(row.get("name") or symbol).strip()
+                if not symbol or symbol in seen:
+                    continue
+                if lowered_query not in name.casefold() and lowered_query not in symbol.casefold():
+                    continue
+                exchange = self._normalize_exchange_label(str(row.get("exchange") or ""), symbol)
+                resolved_market_type = self._resolve_market_type(exchange)
+                resolved_asset_group = self._resolve_asset_group(exchange, name, resolved_market_type)
+                if not self._matches_filters(market_type, asset_group, exchange, name, resolved_market_type, resolved_asset_group):
+                    continue
+                results.append(
+                    StockSearchResult(
+                        symbol=symbol,
+                        name=name,
+                        exchange=exchange,
+                        market_type=resolved_market_type,
+                        asset_group=resolved_asset_group,
+                        currency="KRW",
+                        market_cap=float(row["market_cap"]) if row.get("market_cap") is not None and pd.notna(row.get("market_cap")) else None,
+                    )
+                )
+                seen.add(symbol)
+                if len(results) >= limit:
+                    return results
 
         try:
             search = yf.Search(normalized_query, max_results=max(limit * 3, 10))
@@ -918,7 +1069,15 @@ class DataIngestionService:
             return None
         close_series = history["Close"].copy()
         close_series.index = pd.to_datetime(close_series.index)
-        eligible = close_series.loc[close_series.index <= as_of_date].dropna()
+        as_of_timestamp = pd.Timestamp(as_of_date)
+        if getattr(close_series.index, "tz", None) is not None:
+            if as_of_timestamp.tzinfo is None:
+                as_of_timestamp = as_of_timestamp.tz_localize(close_series.index.tz)
+            else:
+                as_of_timestamp = as_of_timestamp.tz_convert(close_series.index.tz)
+        elif as_of_timestamp.tzinfo is not None:
+            as_of_timestamp = as_of_timestamp.tz_localize(None)
+        eligible = close_series.loc[close_series.index <= as_of_timestamp].dropna()
         if eligible.empty:
             return None
         return float(eligible.iloc[-1])
@@ -1035,6 +1194,9 @@ class DataIngestionService:
             "currency": profile.get("currency"),
             "exchange": profile.get("exchange"),
             "shortName": profile.get("shortName"),
+            "sector": profile.get("sector"),
+            "industry": profile.get("industry"),
+            "quoteType": profile.get("quoteType"),
         }
         return info, profile
 
@@ -1057,6 +1219,96 @@ class DataIngestionService:
         latest_row["revenue"] = latest_row.get("revenue") if latest_row.get("revenue") is not None else profile.get("totalRevenue")
         latest_row["net_income"] = latest_row.get("net_income") if latest_row.get("net_income") is not None else profile.get("netIncomeToCommon")
         return rows
+
+    @staticmethod
+    def _merge_fundamental_sources(*sources: list[dict] | None) -> list[dict]:
+        rows_by_date: dict[date, dict] = {}
+        for source in sources:
+            if not source:
+                continue
+            for row in source:
+                row_date = row.get("date")
+                if row_date is None:
+                    continue
+                existing = rows_by_date.get(row_date)
+                if existing is None:
+                    rows_by_date[row_date] = dict(row)
+                    continue
+                merged = dict(existing)
+                for key, value in row.items():
+                    if key in {"symbol", "date"} or value is not None:
+                        merged[key] = value
+                rows_by_date[row_date] = merged
+        return [rows_by_date[row_date] for row_date in sorted(rows_by_date)]
+
+    def _build_sec_stock_row(self, symbol: str, market_cap: float | None, sec_profile: dict) -> dict:
+        sec_info = {
+            "market_cap": market_cap or sec_profile.get("market_cap"),
+            "currency": sec_profile.get("currency"),
+            "exchange": sec_profile.get("exchange"),
+            "shortName": sec_profile.get("name"),
+            "sector": sec_profile.get("sector"),
+            "industry": sec_profile.get("industry"),
+            "quoteType": sec_profile.get("quoteType"),
+        }
+        sec_profile_payload = {
+            "shortName": sec_profile.get("name"),
+            "longName": sec_profile.get("name"),
+            "exchange": sec_profile.get("exchange"),
+            "currency": sec_profile.get("currency"),
+            "marketCap": market_cap or sec_profile.get("market_cap"),
+            "sector": sec_profile.get("sector"),
+            "industry": sec_profile.get("industry"),
+            "quoteType": sec_profile.get("quoteType"),
+        }
+        return self._build_stock_row(symbol, sec_info, sec_profile_payload)
+
+    def ensure_symbol_fundamentals(self, symbol: str, exchange: str | None = None) -> int:
+        normalized_symbol = str(symbol or "").strip().upper()
+        if not normalized_symbol:
+            return 0
+
+        existing_snapshot = self.stock_repository.get_snapshot_by_symbol(normalized_symbol) or {}
+        resolved_exchange = self._normalize_exchange_label(exchange or existing_snapshot.get("exchange"), normalized_symbol)
+        histories = self._load_price_histories_from_db([normalized_symbol])
+        history = histories.get(normalized_symbol, self._empty_history_frame())
+        market_cap = existing_snapshot.get("market_cap")
+
+        stock_row: dict | None = None
+        sec_profile = self.sec_company_facts_service.get_company_profile(normalized_symbol, resolved_exchange)
+        sec_rows = self.sec_company_facts_service.build_fundamental_rows(normalized_symbol, resolved_exchange, history)
+        if sec_profile is not None:
+            stock_row = self._build_sec_stock_row(normalized_symbol, market_cap, sec_profile)
+
+        yahoo_rows: list[dict] = []
+        if not sec_rows:
+            try:
+                ticker = yf.Ticker(self._to_yahoo_symbol(normalized_symbol, resolved_exchange))
+                info, profile = self._fetch_yahoo_profile(ticker, normalized_symbol)
+                yahoo_stock_row = self._build_stock_row(normalized_symbol, info, profile)
+                stock_row = (
+                    yahoo_stock_row
+                    if stock_row is None
+                    else {
+                        **yahoo_stock_row,
+                        **{key: value for key, value in stock_row.items() if value not in (None, "")},
+                    }
+                )
+                yahoo_rows = self._merge_snapshot_fundamentals(
+                    self._build_fundamental_rows(normalized_symbol, history, info, profile, ticker),
+                    info,
+                    profile,
+                )
+            except Exception:
+                logger.warning("fundamental hydration failed for %s", normalized_symbol, exc_info=True)
+
+        if stock_row is not None:
+            self.stock_repository.upsert_rows([stock_row])
+
+        fundamental_rows = self._merge_fundamental_sources(sec_rows, yahoo_rows)
+        updated = self.fundamental_repository.upsert_fundamentals(fundamental_rows)
+        self.session.commit()
+        return updated
 
     def _resolve_request_symbols(self, request: DataUpdateRequest, parent_job_id: int | None = None) -> tuple[list[str], list[str], list[dict]]:
         discovered_stock_rows: list[dict] = []
@@ -1187,11 +1439,27 @@ class DataIngestionService:
                 price_rows = self._build_price_rows(candidate, history)
 
                 stock_row = self._build_stock_row(candidate, info, profile)
+                sec_profile = self.sec_company_facts_service.get_company_profile(candidate, stock_row.get("exchange"))
+                if sec_profile is not None:
+                    sec_stock_row = self._build_sec_stock_row(candidate, stock_row.get("market_cap"), sec_profile)
+                    stock_row = {
+                        **sec_stock_row,
+                        **{key: value for key, value in stock_row.items() if value not in (None, "")},
+                    }
                 stock_count = self.stock_repository.upsert_rows([stock_row])
                 price_count = self.price_repository.upsert_prices(price_rows)
-                fundamentals_count = self.fundamental_repository.upsert_fundamentals(
-                    self._build_fundamental_rows(candidate, history, info, profile, ticker)
-                )
+                sec_rows = self.sec_company_facts_service.build_fundamental_rows(candidate, stock_row.get("exchange"), history)
+                try:
+                    yahoo_rows = self._merge_snapshot_fundamentals(
+                        self._build_fundamental_rows(candidate, history, info, profile, ticker),
+                        info,
+                        profile,
+                    )
+                except Exception:
+                    logger.warning("on-demand fundamental build failed for %s", candidate, exc_info=True)
+                    yahoo_rows = []
+                fundamental_rows = self._merge_fundamental_sources(sec_rows, yahoo_rows)
+                fundamentals_count = self.fundamental_repository.upsert_fundamentals(fundamental_rows)
                 try:
                     self.structured_event_service.sync_symbol(candidate, ticker=ticker)
                 except Exception:
@@ -1331,7 +1599,16 @@ class DataIngestionService:
                         for _, row in stock_metadata.iterrows()
                     }
                 should_fetch_profiles = fundamentals_only or len(symbols) <= 200 or bool(request.symbols)
-                if not should_fetch_profiles:
+                symbols_needing_profile_hydration = self._resolve_profile_hydration_symbols(symbols, stock_metadata)
+                profile_fetch_required = should_fetch_profiles or bool(symbols_needing_profile_hydration)
+                if symbols_needing_profile_hydration:
+                    logger.info(
+                        "profile hydration queued missing_metadata_symbols=%s total_symbols=%s preset=%s",
+                        len(symbols_needing_profile_hydration),
+                        len(symbols),
+                        request.preset or "strategy_core_equities",
+                    )
+                if not profile_fetch_required:
                     logger.info(
                         "structured event sync skipped for large universe symbols=%s preset=%s",
                         len(symbols),
@@ -1340,7 +1617,7 @@ class DataIngestionService:
                 download_groups = self._resolve_price_download_groups(symbols, request)
                 for group in download_groups:
                     group_symbols = group["symbols"]
-                    chunk_size = self._resolve_market_chunk_size(group, should_fetch_profiles)
+                    chunk_size = self._resolve_market_chunk_size(group, profile_fetch_required)
                     for start in range(0, len(group_symbols), chunk_size):
                         chunk = group_symbols[start:start + chunk_size]
                         provider_symbol_map = {symbol: self._to_yahoo_symbol(symbol, symbol_exchange_map.get(symbol)) for symbol in chunk}
@@ -1375,40 +1652,59 @@ class DataIngestionService:
                                 if not fundamentals_only:
                                     chunk_price_rows.extend(self._build_price_rows(symbol, frame))
 
-                                if not should_fetch_profiles:
+                                needs_profile_hydration = symbol in symbols_needing_profile_hydration
+                                fetch_symbol_profile = should_fetch_profiles or needs_profile_hydration
+                                if not fetch_symbol_profile:
                                     continue
 
                                 sec_profile = self.sec_company_facts_service.get_company_profile(symbol, exchange)
-                                sec_rows = self.sec_company_facts_service.build_fundamental_rows(symbol, exchange, frame) if sec_profile else None
-                                if sec_profile and sec_rows:
-                                    info = {
-                                        "market_cap": sec_rows[-1].get("market_cap"),
+                                sec_rows = (
+                                    self.sec_company_facts_service.build_fundamental_rows(symbol, exchange, frame)
+                                    if sec_profile and should_fetch_profiles
+                                    else None
+                                )
+                                if sec_profile:
+                                    sec_info = {
+                                        "market_cap": sec_rows[-1].get("market_cap") if sec_rows else None,
                                         "currency": sec_profile.get("currency"),
                                         "exchange": sec_profile.get("exchange"),
                                         "shortName": sec_profile.get("name"),
+                                        "sector": sec_profile.get("sector"),
+                                        "industry": sec_profile.get("industry"),
+                                        "quoteType": sec_profile.get("quoteType"),
                                     }
-                                    profile = {
+                                    sec_profile_payload = {
                                         "shortName": sec_profile.get("name"),
                                         "longName": sec_profile.get("name"),
                                         "exchange": sec_profile.get("exchange"),
                                         "currency": sec_profile.get("currency"),
-                                        "marketCap": sec_rows[-1].get("market_cap"),
+                                        "marketCap": sec_rows[-1].get("market_cap") if sec_rows else None,
+                                        "sector": sec_profile.get("sector"),
+                                        "industry": sec_profile.get("industry"),
+                                        "quoteType": sec_profile.get("quoteType"),
                                     }
-                                    chunk_stock_rows.append(self._build_stock_row(symbol, info, profile))
-                                    chunk_fundamental_rows.extend(sec_rows)
-                                    continue
+                                    sec_stock_row = self._build_stock_row(symbol, sec_info, sec_profile_payload)
+                                    sec_has_sector = self._clean_text(sec_stock_row.get("sector")) is not None
+                                    if should_fetch_profiles and not needs_profile_hydration and sec_rows:
+                                        chunk_stock_rows.append(sec_stock_row)
+                                        chunk_fundamental_rows.extend(sec_rows)
+                                        continue
+                                    if needs_profile_hydration and sec_has_sector:
+                                        chunk_stock_rows.append(sec_stock_row)
+                                        continue
 
                                 ticker = yf.Ticker(provider_symbol)
                                 info, profile = self._fetch_yahoo_profile(ticker, symbol)
-                                fundamental_rows = self._merge_snapshot_fundamentals(
-                                    self._build_fundamental_rows(symbol, frame, info, profile, ticker),
-                                    info,
-                                    profile,
-                                )
 
                                 chunk_stock_rows.append(self._build_stock_row(symbol, info, profile))
-                                chunk_fundamental_rows.extend(fundamental_rows)
-                                if not fundamentals_only:
+                                if should_fetch_profiles:
+                                    fundamental_rows = self._merge_snapshot_fundamentals(
+                                        self._build_fundamental_rows(symbol, frame, info, profile, ticker),
+                                        info,
+                                        profile,
+                                    )
+                                    chunk_fundamental_rows.extend(fundamental_rows)
+                                if should_fetch_profiles and not fundamentals_only:
                                     try:
                                         event_sync_counts = self.structured_event_service.sync_symbol(symbol, ticker=ticker)
                                         earnings_events_updated += event_sync_counts["earnings_events_updated"]
