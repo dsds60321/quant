@@ -33,6 +33,120 @@
 3. 주식 데이터 분석, 후보 종목 계산, 백테스트, 최적화처럼 계산량이 큰 작업은 `Spring Boot`가 `Python` 쪽에 요청하고 결과를 다시 받아 사용자에게 전달합니다.
 4. 계산 결과와 플랫폼 데이터는 `PostgreSQL`에 저장되고, 이후 화면과 이력 조회에 다시 사용됩니다.
 
+## 외부 API 및 데이터 소스
+
+호출 흐름은 다음과 같습니다.
+
+`Next.js -> Spring Boot -> Python Quant Engine -> 외부 데이터 소스`
+
+- `Next.js` 프론트엔드는 외부 3rd-party API를 직접 호출하지 않습니다.
+- `Spring Boot`는 외부 공개 API 대신 내부 `Python Quant Engine`을 호출합니다.
+- 실제 외부 데이터 수집은 주로 `Python Quant Engine`에서 수행합니다.
+
+### 1. Yahoo Finance 데이터 소스
+
+가장 넓게 사용되는 시세/메타데이터 공급원입니다.
+
+- 사용 목적
+  - 종목 가격 이력 다운로드
+  - 시장 지수 조회
+  - 심볼 검색
+  - 종목 프로필 및 보조 펀더멘털 조회
+  - 실적 일정 조회
+  - insider 거래 조회
+- 사용 기능
+  - 시장 현황
+  - 종목 검색 및 종목 등록
+  - 데이터 센터 적재
+  - 백테스트용 가격 데이터 준비
+  - 벤치마크 시계열 보강
+  - 이벤트 분석
+- 인증
+  - 현재 코드 기준 별도 API Key 설정 없음
+- 비고
+  - 코드에서는 Yahoo Finance 관련 데이터 공급자를 통해 시세, 검색, 이벤트 데이터를 수집합니다.
+
+### 2. NewsAPI
+
+뉴스 분석 및 뉴스 영향도 기능에서 사용하는 외부 뉴스 공급자입니다.
+
+- 기본 엔드포인트
+  - `https://newsapi.org/v2/everything`
+- 사용 목적
+  - 종목 또는 키워드 기준 최신 뉴스 수집
+  - 뉴스 감성 분석 입력 데이터 확보
+  - 뉴스 영향도 그래프 생성용 원문 데이터 수집
+- 사용 기능
+  - News Intelligence
+  - Event Analysis 일부 뉴스 연계 기능
+- 인증
+  - `NEWS_API_KEY` 필요
+- 비고
+  - API 키가 없으면 캐시된 뉴스만 사용하고, 캐시도 없으면 외부 의존성 오류를 반환합니다.
+
+### 3. SEC EDGAR / SEC Data
+
+미국 상장 종목의 회사 프로필과 공시 기반 펀더멘털 데이터를 수집하는 데 사용합니다.
+
+- 사용 엔드포인트
+  - `https://www.sec.gov/files/company_tickers_exchange.json`
+  - `https://www.sec.gov/Archives/edgar/daily-index/xbrl/companyfacts.zip`
+  - `https://data.sec.gov/submissions/CIK{cik}.json`
+- 사용 목적
+  - 미국 종목 ticker-CIK 매핑 확보
+  - 회사 기본 프로필 보강
+  - 공시 기반 매출, 순이익, EPS, 자본총계 등 펀더멘털 계산
+- 사용 기능
+  - 종목 등록 시 미국 종목 메타데이터 보강
+  - 데이터 센터 펀더멘털 적재
+  - 종목 상세 화면의 재무 지표 보강
+- 인증
+  - 별도 API Key는 없지만 `SEC_USER_AGENT` 설정을 사용
+- 비고
+  - 다운로드 결과는 `.cache/sec` 아래에 캐시합니다.
+
+### 4. Nasdaq Trader Symbol Directory
+
+미국 상장 종목 유니버스 구성을 위해 사용합니다.
+
+- 사용 엔드포인트
+  - `https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt`
+  - `https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt`
+- 사용 목적
+  - NASDAQ, NYSE, NYSE Arca, IEX, BATS 등 미국 상장 종목 마스터 목록 수집
+- 사용 기능
+  - 전체 종목 유니버스 탐색
+  - 데이터 동기화 시 종목 마스터 초기 구성
+- 인증
+  - 별도 인증 없음
+
+### 5. KRX KIND
+
+국내 상장 종목 유니버스 구성을 위해 사용합니다.
+
+- 사용 엔드포인트
+  - `https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=stockMkt`
+  - `https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType=kosdaqMkt`
+- 사용 목적
+  - KOSPI, KOSDAQ 상장 종목 목록 수집
+  - 국내 종목명, 업종, 시장 구분 기초 데이터 확보
+- 사용 기능
+  - 국내 종목 마스터 구성
+  - 종목 검색 보조
+  - 데이터 센터 적재
+- 인증
+  - 별도 인증 없음
+
+### 요약
+
+현재 프로젝트에서 코드상 직접 확인되는 외부 API/데이터 소스는 아래 5개입니다.
+
+1. Yahoo Finance 데이터 소스
+2. NewsAPI
+3. SEC EDGAR / SEC Data
+4. Nasdaq Trader Symbol Directory
+5. KRX KIND
+
 ## 오래 걸리는 작업 처리
 
 백테스트나 데이터 동기화처럼 오래 걸리는 작업은 화면 요청을 붙잡아두지 않고 백그라운드에서 실행합니다.
@@ -44,7 +158,6 @@
 5. 화면에서는 이 `jobId`를 이용해 진행 상태를 다시 조회할 수 있게 했습니다.
 
 사용자가 진행중 또는 완료 상태를 확인하는 방식:
--  
 - 클라이언트에서 풀링 방식으로 주기적으로 조회합니다.
 
 ## ERD
@@ -59,7 +172,7 @@
 
 ## AI / NLP 활용
 
-Hugging Face를 통해 AI 라이브러를 실제 기능에 사용하고 있습니다.  
+Hugging Face를 통해 AI 라이브러리를 실제 기능에 사용하고 있습니다.  
 `transformers`와 `torch`를 이용해 뉴스 감성 분석과 영한 번역을 처리합니다.
 
 ### 사용 라이브러리와 모델
